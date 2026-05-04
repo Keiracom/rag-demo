@@ -57,15 +57,21 @@ def classify_source(to_email: str, subject: str) -> str:
                       "macquariedental.com.au", "bellevuehilldental.com.au"}
     if any(d in to_low for d in dental_domains):
         return "dental_bu"
+    # Specific company careers pages we probed (must come BEFORE generic prefix match)
+    careers_domains = {"titan.ai", "manifestcyber.com", "haast.io"}
+    if any(d in to_low for d in careers_domains):
+        return "careers_page"
     # Generic careers/apply/hiring inboxes
-    if to_low.startswith(("apply@", "careers@", "hiring@", "jobs@", "humans@", "talent@", "career@", "work@", "humancapital@", "founders@", "eng.hiring@", "humans@", "hello@")):
+    if to_low.startswith(("apply@", "careers@", "hiring@", "jobs@", "humans@", "talent@",
+                          "career@", "work@", "humancapital@", "founders@", "eng.hiring@",
+                          "hello@", "team@", "join@", "recruit@", "recruiting@", "people@")):
         return "hn_who_is_hiring"
     # HN posters' personal +hn-tagged emails
     if "+hn@" in to_low:
         return "hn_who_is_hiring"
-    # Specific company careers pages we probed
-    if any(d in to_low for d in ["titan.ai", "manifestcyber.com", "haast.io"]):
-        return "careers_page"
+    # Subject signals — HN application emails Aiden sent use "— quick intro" pattern
+    if "quick intro" in subj_low or "hn" in subj_low.split() or "may 2026 hn" in subj_low:
+        return "hn_who_is_hiring"
     return "other"
 
 
@@ -92,20 +98,28 @@ def parse_date(date_str: str) -> datetime:
 
 def main():
     hours = int(sys.argv[1]) if len(sys.argv) > 1 else 24
-    print(f"Searching sent mail from last {hours} hours...")
-    res = call_gmail_mcp("keiramail_search_messages", {"q": f"in:sent newer_than:{hours}h", "max_results": 20})
-    if isinstance(res, dict) and "error" in res:
-        print(f"  search err: {res['error']}")
-        return
-    # API returns either a dict with "results" key OR a bare list
-    if isinstance(res, list):
-        msgs = res
-    elif isinstance(res, dict) and "results" in res:
-        msgs = res["results"]
-    else:
-        print(f"  unexpected response shape: {str(res)[:200]}")
-        return
-    print(f"  found {len(msgs)} sent messages")
+    # Gmail MCP caps at 20 results per call — paginate via narrower time windows.
+    STRIDE_HOURS = 4
+    print(f"Searching sent mail from last {hours} hours via {hours // STRIDE_HOURS + 1} time-window calls...")
+    seen_ids: set = set()
+    msgs: list = []
+    for window_start in range(0, hours, STRIDE_HOURS):
+        window_end = min(window_start + STRIDE_HOURS, hours)
+        if window_start == 0:
+            q = f"in:sent newer_than:{window_end}h"
+        else:
+            q = f"in:sent newer_than:{window_end}h older_than:{window_start}h"
+        res = call_gmail_mcp("keiramail_search_messages", {"q": q, "max_results": 20})
+        if isinstance(res, dict) and "error" in res:
+            print(f"  window {window_start}-{window_end}h err: {res['error']}")
+            continue
+        batch = res if isinstance(res, list) else (res.get("results", []) if isinstance(res, dict) else [])
+        new = [m for m in batch if m.get("message_id") not in seen_ids]
+        for m in new:
+            seen_ids.add(m["message_id"])
+        msgs.extend(new)
+        print(f"  window {window_start}-{window_end}h: +{len(new)} new (batch={len(batch)})")
+    print(f"  total unique sent messages: {len(msgs)}")
 
     inserted = 0
     skipped_existing = 0

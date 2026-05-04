@@ -133,6 +133,129 @@ def healthz():
     return {"ok": True}
 
 
+# ===== Case study #01: Agentic AI Copilot — Financial Operations =====
+
+FINOPS_SCHEMA = """SCHEMA (Postgres, schema=finops_demo):
+- accounts(id BIGINT PK, name TEXT, type ENUM[superannuation,smsf,retail,wholesale], aud_value NUMERIC, opened_at DATE)
+- holdings(id, account_id FK→accounts, ticker, asset_class ENUM[au_equity,intl_equity,fixed_income,cash,property,crypto], units NUMERIC, avg_cost_aud NUMERIC, current_price_aud NUMERIC, opened_at DATE)
+- transactions(id, account_id FK, tx_date DATE, tx_type ENUM[buy,sell,dividend,contribution,withdrawal,fee], ticker TEXT NULLABLE, units NUMERIC NULLABLE, price_aud NUMERIC NULLABLE, amount_aud NUMERIC, notes TEXT NULLABLE)
+- daily_performance(id, account_id FK, perf_date DATE, total_value_aud NUMERIC, daily_return_pct NUMERIC)
+
+5 accounts, 41 holdings, 230 transactions, 455 performance rows. Today is 2026-05-04. All values $AUD."""
+
+
+def finops_generate_sql(question: str) -> tuple[str, str]:
+    """Step 1 — generate read-only SQL. Returns (sql, rationale)."""
+    if not ANTHROPIC:
+        return ("", "Anthropic API key not configured")
+    prompt = f"""{FINOPS_SCHEMA}
+
+Generate a single READ-ONLY Postgres SELECT query that answers the user's question.
+
+Rules:
+- SELECT/WITH only — no INSERT/UPDATE/DELETE/DROP/ALTER/CREATE/TRUNCATE
+- Always schema-prefix tables (finops_demo.accounts, etc)
+- Always include LIMIT (max 100)
+- Use Postgres syntax (INTERVAL, etc). For "current"/"now" use 2026-05-04.
+
+Respond with EXACTLY this format:
+SQL:
+```sql
+<query here>
+```
+RATIONALE: <one sentence on assumption you made>
+
+USER QUESTION: {question}"""
+    msg = ANTHROPIC.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=600,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = (msg.content[0].text or "").strip()
+    sql_match = re.search(r"```sql\s*(.*?)\s*```", text, re.S | re.I)
+    sql = sql_match.group(1).strip() if sql_match else ""
+    rationale_match = re.search(r"RATIONALE:\s*(.+?)(?:\n|$)", text)
+    rationale = rationale_match.group(1).strip() if rationale_match else ""
+    return sql, rationale
+
+
+def finops_validate_and_run(sql: str) -> tuple[list[dict], list[str], str | None]:
+    """Run SQL safely. Returns (rows, columns, error). Refuses non-SELECT."""
+    if not sql:
+        return [], [], "No SQL generated"
+    sql_upper = sql.upper().strip().rstrip(";")
+    if not sql_upper.startswith("SELECT") and not sql_upper.startswith("WITH"):
+        return [], [], f"Refused — only SELECT/WITH allowed (got: {sql_upper[:30]})"
+    forbidden = ["INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "CREATE ", "TRUNCATE ", "GRANT "]
+    for f in forbidden:
+        if f in sql_upper:
+            return [], [], f"Refused — forbidden keyword: {f.strip()}"
+    try:
+        with psycopg.connect(DB_URL, prepare_threshold=None) as conn, conn.cursor() as cur:
+            cur.execute("SET statement_timeout = '5s'")
+            cur.execute(sql)
+            cols = [d[0] for d in cur.description] if cur.description else []
+            raw = cur.fetchall()
+            rows = [dict(zip(cols, r)) for r in raw[:100]]
+            for row in rows:
+                for k, v in list(row.items()):
+                    if hasattr(v, "isoformat"):
+                        row[k] = v.isoformat()
+                    elif hasattr(v, "__float__") and not isinstance(v, bool):
+                        try: row[k] = float(v)
+                        except (TypeError, ValueError): row[k] = str(v)
+        return rows, cols, None
+    except Exception as e:
+        return [], [], f"SQL execution error: {str(e)[:200]}"
+
+
+def finops_synthesize_answer(question: str, sql: str, rows: list[dict], rationale: str) -> str:
+    """Step 2 — natural-language answer from query results."""
+    if not ANTHROPIC:
+        return "Anthropic API key not configured"
+    if not rows:
+        rows_repr = "(no rows returned)"
+    else:
+        sample = rows[:20]
+        import json as _json
+        rows_repr = _json.dumps(sample, indent=2, default=str)
+        if len(rows) > 20:
+            rows_repr += f"\n\n(showing 20 of {len(rows)})"
+    prompt = f"""You're answering a financial-ops question over a real Postgres dataset. Be concrete with numbers, $AUD values, dates. Don't invent data — only use what's in the rows.
+
+QUESTION: {question}
+SQL EXECUTED: {sql}
+ASSUMPTIONS MADE: {rationale}
+ROWS RETURNED: {rows_repr}
+
+Answer in 2-4 sentences. Lead with the answer, then context. If empty, say so plainly."""
+    msg = ANTHROPIC.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return (msg.content[0].text or "").strip()
+
+
+@app.get("/api/finops")
+def api_finops(q: str = Query(..., min_length=3, max_length=400)):
+    """Two-step agent loop: NL → SQL → results → NL answer."""
+    sql, rationale = finops_generate_sql(q)
+    rows, cols, err = finops_validate_and_run(sql)
+    if err:
+        return JSONResponse({"query": q, "error": err, "sql": sql, "rationale": rationale})
+    answer = finops_synthesize_answer(q, sql, rows, rationale)
+    return JSONResponse({
+        "query": q,
+        "sql": sql,
+        "rationale": rationale,
+        "row_count": len(rows),
+        "columns": cols,
+        "rows": rows[:20],
+        "answer": answer,
+    })
+
+
 @app.get("/api/outreach")
 def api_outreach():
     """Outreach tracker: list sends + status counts."""
@@ -166,9 +289,111 @@ def outreach_page():
     return OUTREACH_HTML
 
 
+@app.get("/finops", response_class=HTMLResponse)
+def finops_page():
+    return FINOPS_HTML
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
+
+
+FINOPS_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Finops Copilot — Keiracom Demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Two-step AI agent loop over a synthetic Australian portfolio dataset: NL question → SQL → answer with raw rows + rationale.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box }
+  body { margin:0; background:#F7F3EE; color:#0F1419; font-family:'DM Sans', system-ui, sans-serif; line-height:1.5 }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px }
+  .label { font-family:'JetBrains Mono', monospace; font-size:11px; color:#D4956A; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px }
+  h1 { font-size:28px; margin:0 0 8px; letter-spacing:-0.01em }
+  .sub { color:#5A6470; font-size:14px; margin:0 }
+  form { display:flex; gap:8px; margin-top:24px }
+  input { flex:1; padding:14px 16px; border:1px solid #D4D8DC; border-radius:6px; font-size:16px; font-family:inherit; background:white; color:#0F1419 }
+  input:focus { outline:2px solid #D4956A; outline-offset:1px }
+  button { padding:14px 22px; background:#D4956A; color:white; border:none; border-radius:6px; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit }
+  button:disabled { opacity:0.5; cursor:wait }
+  .examples { margin-top:14px; font-size:13px; color:#5A6470 }
+  .examples a { color:#8B5A30; text-decoration:none; margin-right:14px; cursor:pointer; display:inline-block; margin-bottom:4px }
+  .examples a:hover { text-decoration:underline }
+  .answer { margin-top:32px; padding:20px; background:white; border-radius:6px; border:1px solid #E8E2D8; font-size:15px }
+  .step { margin-top:18px; padding:14px; background:#FBF8F2; border:1px solid #E8E2D8; border-radius:6px }
+  .step .l { font-family:'JetBrains Mono', monospace; font-size:11px; color:#D4956A; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px }
+  pre { margin:0; padding:12px; background:#0F1419; color:#F7F3EE; border-radius:4px; overflow-x:auto; font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.4 }
+  .rationale { color:#5A6470; font-style:italic; font-size:13px }
+  .err { color:#B91C1C; padding:14px; background:#FEF2F2; border:1px solid #FECACA; border-radius:6px; margin-top:16px }
+  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px }
+  th { background:#EFEAE0; padding:6px 8px; text-align:left; font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; color:#5A6470 }
+  td { padding:6px 8px; border-top:1px solid #F0EBE2; font-family:'JetBrains Mono', monospace; font-size:11px }
+  footer { margin-top:48px; padding-top:24px; border-top:1px solid #E8E2D8; font-size:13px; color:#5A6470 }
+  footer a { color:#1E40AF; text-decoration:none }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="label">Keiracom · Demo #2</div>
+  <h1>Finops AI Copilot</h1>
+  <p class="sub">Two-step agent loop over a synthetic AU portfolio dataset (5 accounts, 41 holdings, 230 transactions, 90 days perf). Natural language → SQL → cited answer with raw rows.</p>
+  <form id="f">
+    <input id="q" placeholder='Ask: "what was the best performing account last 30 days?"' autofocus required>
+    <button id="b" type="submit">Ask</button>
+  </form>
+  <div class="examples">Try:
+    <a onclick="ask('What was the total return for each account over the last 30 days?')">30-day return per account</a>
+    <a onclick="ask('Which holdings have the largest unrealised gains?')">Top unrealised gains</a>
+    <a onclick="ask('How much was contributed to the SMSF in the last 60 days?')">SMSF contributions</a>
+    <a onclick="ask('Which asset class has the highest exposure across all accounts?')">Top asset class</a>
+  </div>
+  <div id="out"></div>
+  <footer>
+    Reference build by <a href="https://keiracom.com">Keiracom</a> — two-step AI agent loop (Sonnet for SQL gen, Haiku for answer) over read-only Postgres. SQL validated before exec (SELECT-only, statement_timeout=5s). Synthetic data, no real portfolios. <a href="https://github.com/Keiracom/rag-demo" style="color:#5A6470">github.com/Keiracom/rag-demo</a>
+  </footer>
+</div>
+<script>
+function ask(text){ document.getElementById('q').value = text; document.getElementById('f').dispatchEvent(new Event('submit')); }
+const f=document.getElementById('f'),q=document.getElementById('q'),b=document.getElementById('b'),o=document.getElementById('out');
+f.addEventListener('submit', async e => {
+  e.preventDefault();
+  const query=q.value.trim();
+  if(!query) return;
+  b.disabled=true; b.textContent='Thinking…'; o.innerHTML='';
+  try {
+    const r = await fetch('/api/finops?q='+encodeURIComponent(query));
+    const d = await r.json();
+    let html = '';
+    if (d.error) {
+      html = '<div class="err"><b>Agent refused or errored:</b> '+d.error+'</div>';
+      if (d.sql) html += '<div class="step"><div class="l">SQL drafted (rejected)</div><pre>'+escapeHtml(d.sql)+'</pre></div>';
+    } else {
+      html += '<div class="answer"><div class="l label">Answer</div>'+escapeHtml(d.answer)+'</div>';
+      html += '<div class="step"><div class="l">SQL executed</div><pre>'+escapeHtml(d.sql)+'</pre>';
+      if (d.rationale) html += '<div class="rationale" style="margin-top:8px">→ '+escapeHtml(d.rationale)+'</div>';
+      html += '</div>';
+      if (d.rows && d.rows.length){
+        html += '<div class="step"><div class="l">Raw rows ('+d.row_count+')</div>';
+        html += '<table><thead><tr>'+d.columns.map(c=>'<th>'+escapeHtml(c)+'</th>').join('')+'</tr></thead>';
+        html += '<tbody>'+d.rows.map(row=>'<tr>'+d.columns.map(c=>'<td>'+escapeHtml(String(row[c]??''))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+      }
+    }
+    o.innerHTML = html;
+  } catch(err) {
+    o.innerHTML = '<div class="err">'+err.message+'</div>';
+  } finally {
+    b.disabled=false; b.textContent='Ask';
+  }
+});
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+</script>
+</body>
+</html>"""
 
 
 OUTREACH_HTML = """<!doctype html>
