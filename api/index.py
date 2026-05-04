@@ -325,14 +325,15 @@ FINOPS_HTML = """<!doctype html>
   .examples a { color:#8B5A30; text-decoration:none; margin-right:14px; cursor:pointer; display:inline-block; margin-bottom:4px }
   .examples a:hover { text-decoration:underline }
   .answer { margin-top:32px; padding:20px; background:white; border-radius:6px; border:1px solid #E8E2D8; font-size:15px }
-  .step { margin-top:18px; padding:14px; background:#FBF8F2; border:1px solid #E8E2D8; border-radius:6px }
+  .step { margin-top:18px; padding:14px; background:#FBF8F2; border:1px solid #E8E2D8; border-radius:6px; overflow-x:auto }
   .step .l { font-family:'JetBrains Mono', monospace; font-size:11px; color:#D4956A; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px }
-  pre { margin:0; padding:12px; background:#0F1419; color:#F7F3EE; border-radius:4px; overflow-x:auto; font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.4 }
+  pre { margin:0; padding:12px; background:#0F1419; color:#F7F3EE; border-radius:4px; overflow-x:auto; font-family:'JetBrains Mono', monospace; font-size:12px; line-height:1.4; white-space:pre-wrap; word-break:break-word }
   .rationale { color:#5A6470; font-style:italic; font-size:13px }
   .err { color:#B91C1C; padding:14px; background:#FEF2F2; border:1px solid #FECACA; border-radius:6px; margin-top:16px }
-  table { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px }
-  th { background:#EFEAE0; padding:6px 8px; text-align:left; font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; color:#5A6470 }
-  td { padding:6px 8px; border-top:1px solid #F0EBE2; font-family:'JetBrains Mono', monospace; font-size:11px }
+  .table-wrap { overflow-x:auto; max-height:400px; overflow-y:auto; border-radius:4px; margin-top:8px }
+  table { width:100%; border-collapse:collapse; font-size:12px }
+  th { background:#EFEAE0; padding:6px 8px; text-align:left; font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.05em; color:#5A6470; white-space:nowrap; position:sticky; top:0; z-index:1 }
+  td { padding:6px 8px; border-top:1px solid #F0EBE2; font-family:'JetBrains Mono', monospace; font-size:11px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   footer { margin-top:48px; padding-top:24px; border-top:1px solid #E8E2D8; font-size:13px; color:#5A6470 }
   footer a { color:#1E40AF; text-decoration:none }
 </style>
@@ -379,8 +380,8 @@ f.addEventListener('submit', async e => {
       html += '</div>';
       if (d.rows && d.rows.length){
         html += '<div class="step"><div class="l">Raw rows ('+d.row_count+')</div>';
-        html += '<table><thead><tr>'+d.columns.map(c=>'<th>'+escapeHtml(c)+'</th>').join('')+'</tr></thead>';
-        html += '<tbody>'+d.rows.map(row=>'<tr>'+d.columns.map(c=>'<td>'+escapeHtml(String(row[c]??''))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+        html += '<div class="table-wrap"><table><thead><tr>'+d.columns.map(c=>'<th>'+escapeHtml(c)+'</th>').join('')+'</tr></thead>';
+        html += '<tbody>'+d.rows.map(row=>'<tr>'+d.columns.map(c=>'<td title="'+escapeHtml(String(row[c]??''))+'">'+escapeHtml(String(row[c]??''))+'</td>').join('')+'</tr>').join('')+'</tbody></table></div></div>';
       }
     }
     o.innerHTML = html;
@@ -416,9 +417,10 @@ OUTREACH_HTML = """<!doctype html>
   .stat { padding:14px 18px; background:white; border:1px solid #E8E2D8; border-radius:6px; min-width:100px }
   .stat .v { font-size:24px; font-weight:700; line-height:1 }
   .stat .l { font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#5A6470; margin-top:6px }
-  table { width:100%; border-collapse:collapse; background:white; border:1px solid #E8E2D8; border-radius:6px; overflow:hidden; font-size:13px }
-  th { text-align:left; padding:10px 12px; background:#EFEAE0; font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#5A6470; border-bottom:1px solid #E8E2D8 }
-  td { padding:10px 12px; border-bottom:1px solid #F0EBE2; vertical-align:top }
+  .table-wrap { overflow-x:auto; border-radius:6px; border:1px solid #E8E2D8 }
+  table { width:100%; border-collapse:collapse; background:white; font-size:13px; min-width:700px }
+  th { text-align:left; padding:10px 12px; background:#EFEAE0; font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#5A6470; border-bottom:1px solid #E8E2D8; white-space:nowrap }
+  td { padding:10px 12px; border-bottom:1px solid #F0EBE2; vertical-align:top; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   tr:last-child td { border-bottom:none }
   tr:hover td { background:#FBF8F2 }
   .pill { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-family:'JetBrains Mono', monospace; font-weight:500 }
@@ -440,10 +442,12 @@ OUTREACH_HTML = """<!doctype html>
   <h1>Outreach Tracker</h1>
   <p class="sub">Live status of all email outreach. Refresh for latest.</p>
   <div id="stats" class="stats"></div>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Sent</th><th>To</th><th>Company</th><th>Subject</th><th>Source</th><th>Status</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
+  </div>
 </div>
 <script>
 async function load() {
@@ -500,7 +504,7 @@ HTML = """<!doctype html>
   input:focus { outline:2px solid #D4956A; outline-offset:1px }
   button { padding:14px 22px; background:#D4956A; color:white; border:none; border-radius:6px; font-weight:700; font-size:14px; cursor:pointer; font-family:inherit }
   button:disabled { opacity:0.5; cursor:wait }
-  .answer { margin-top:32px; padding:20px; background:white; border-radius:6px; border:1px solid #E8E2D8; font-size:15px; white-space:pre-wrap; line-height:1.6 }
+  .answer { margin-top:32px; padding:20px; background:white; border-radius:6px; border:1px solid #E8E2D8; font-size:15px; white-space:pre-wrap; line-height:1.6; word-break:break-word; overflow-wrap:break-word }
   .answer .cite { background:#F7E8D8; padding:1px 5px; border-radius:3px; font-family:'JetBrains Mono', monospace; font-size:12px; color:#8B5A30; text-decoration:none }
   .citations { margin-top:24px }
   .cit { padding:14px; background:white; border:1px solid #E8E2D8; border-radius:6px; margin-bottom:8px }
