@@ -133,10 +133,124 @@ def healthz():
     return {"ok": True}
 
 
+@app.get("/api/outreach")
+def api_outreach():
+    """Outreach tracker: list sends + status counts."""
+    with psycopg.connect(DB_URL, prepare_threshold=None) as conn, conn.cursor() as cur:
+        cur.execute("""
+            SELECT status, COUNT(*) FROM outreach.sends GROUP BY status
+        """)
+        counts = {row[0]: row[1] for row in cur.fetchall()}
+        cur.execute("""
+            SELECT id, gmail_message_id, gmail_thread_id, to_email, to_company, subject,
+                   source, status, sent_at, reply_at, reply_preview
+            FROM outreach.sends
+            ORDER BY sent_at DESC
+            LIMIT 200
+        """)
+        sends = [
+            {
+                "id": r[0], "thread_id": r[2], "to_email": r[3], "company": r[4],
+                "subject": r[5], "source": r[6], "status": r[7],
+                "sent_at": r[8].isoformat() if r[8] else None,
+                "reply_at": r[9].isoformat() if r[9] else None,
+                "reply_preview": r[10],
+            }
+            for r in cur.fetchall()
+        ]
+    return JSONResponse({"counts": counts, "total": sum(counts.values()), "sends": sends})
+
+
+@app.get("/outreach", response_class=HTMLResponse)
+def outreach_page():
+    return OUTREACH_HTML
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return HTML
 
+
+OUTREACH_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Outreach Tracker — Keiracom</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box }
+  body { margin:0; background:#F7F3EE; color:#0F1419; font-family:'DM Sans', system-ui, sans-serif; line-height:1.4 }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing:-0.01em }
+  .sub { color:#5A6470; font-size:13px; margin:0 0 24px }
+  .stats { display:flex; gap:12px; margin-bottom:24px; flex-wrap:wrap }
+  .stat { padding:14px 18px; background:white; border:1px solid #E8E2D8; border-radius:6px; min-width:100px }
+  .stat .v { font-size:24px; font-weight:700; line-height:1 }
+  .stat .l { font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#5A6470; margin-top:6px }
+  table { width:100%; border-collapse:collapse; background:white; border:1px solid #E8E2D8; border-radius:6px; overflow:hidden; font-size:13px }
+  th { text-align:left; padding:10px 12px; background:#EFEAE0; font-family:'JetBrains Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:0.08em; color:#5A6470; border-bottom:1px solid #E8E2D8 }
+  td { padding:10px 12px; border-bottom:1px solid #F0EBE2; vertical-align:top }
+  tr:last-child td { border-bottom:none }
+  tr:hover td { background:#FBF8F2 }
+  .pill { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-family:'JetBrains Mono', monospace; font-weight:500 }
+  .p-sent { background:#E8E2D8; color:#5A6470 }
+  .p-replied_unknown { background:#FFF7E6; color:#8B6914 }
+  .p-replied_positive { background:#D4F5E0; color:#1F7038 }
+  .p-replied_negative { background:#F7D8D8; color:#992525 }
+  .p-bounced { background:#F7D8D8; color:#992525 }
+  .p-followup_needed { background:#F7E8D8; color:#8B5A30 }
+  .src { font-family:'JetBrains Mono', monospace; font-size:11px; color:#5A6470 }
+  .ts { font-family:'JetBrains Mono', monospace; font-size:11px; color:#5A6470 white-space:nowrap }
+  a { color:#1E40AF; text-decoration:none }
+  a:hover { text-decoration:underline }
+  .reply-prev { color:#5A6470; font-size:12px; font-style:italic; margin-top:4px }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Outreach Tracker</h1>
+  <p class="sub">Live status of all email outreach. Refresh for latest.</p>
+  <div id="stats" class="stats"></div>
+  <table>
+    <thead><tr><th>Sent</th><th>To</th><th>Company</th><th>Subject</th><th>Source</th><th>Status</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<script>
+async function load() {
+  const r = await fetch('/api/outreach');
+  const d = await r.json();
+  const stats = document.getElementById('stats');
+  stats.innerHTML = '<div class="stat"><div class="v">'+d.total+'</div><div class="l">Total Sent</div></div>';
+  const order = ['sent','replied_unknown','replied_positive','replied_negative','bounced','followup_needed'];
+  for (const k of order) {
+    const v = d.counts[k] || 0;
+    if (v === 0 && k !== 'sent') continue;
+    stats.innerHTML += '<div class="stat"><div class="v">'+v+'</div><div class="l">'+k.replace(/_/g,' ')+'</div></div>';
+  }
+  const rows = document.getElementById('rows');
+  rows.innerHTML = d.sends.map(s => {
+    const ts = s.sent_at ? new Date(s.sent_at).toLocaleString('en-AU', {timeZone: 'Australia/Sydney', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}) : '';
+    const replyBlock = s.reply_preview ? '<div class="reply-prev">↳ '+s.reply_preview.slice(0,140)+'…</div>' : '';
+    const threadLink = s.thread_id ? '<a href="https://mail.google.com/mail/u/0/#all/'+s.thread_id+'" target="_blank">'+(s.subject||'(no subject)')+'</a>' : (s.subject||'(no subject)');
+    return '<tr>'
+      + '<td class="ts">'+ts+'</td>'
+      + '<td>'+s.to_email+'</td>'
+      + '<td>'+(s.company||'')+'</td>'
+      + '<td>'+threadLink+replyBlock+'</td>'
+      + '<td><span class="src">'+s.source+'</span></td>'
+      + '<td><span class="pill p-'+s.status+'">'+s.status+'</span></td>'
+      + '</tr>';
+  }).join('');
+}
+load();
+</script>
+</body>
+</html>"""
 
 HTML = """<!doctype html>
 <html lang="en">
