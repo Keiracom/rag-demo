@@ -256,9 +256,23 @@ def api_finops(q: str = Query(..., min_length=3, max_length=400)):
     })
 
 
+import secrets as _secrets
+OUTREACH_KEY = os.environ.get("OUTREACH_KEY") or _secrets.token_urlsafe(16)
+
+
+def _check_outreach_auth(key: str | None):
+    """Simple key-based auth for outreach endpoints."""
+    if key != OUTREACH_KEY:
+        return JSONResponse({"error": "Unauthorized. Append ?key=<password> to access."}, status_code=401)
+    return None
+
+
 @app.get("/api/outreach")
-def api_outreach():
+def api_outreach(key: str = Query(default=None)):
     """Outreach tracker: list sends + status counts."""
+    denied = _check_outreach_auth(key)
+    if denied:
+        return denied
     with psycopg.connect(DB_URL, prepare_threshold=None) as conn, conn.cursor() as cur:
         cur.execute("""
             SELECT status, COUNT(*) FROM outreach.sends GROUP BY status
@@ -285,7 +299,10 @@ def api_outreach():
 
 
 @app.get("/outreach", response_class=HTMLResponse)
-def outreach_page():
+def outreach_page(key: str = Query(default=None)):
+    denied = _check_outreach_auth(key)
+    if denied:
+        return HTMLResponse("<h1>Unauthorized</h1><p>Append ?key=&lt;password&gt; to access the outreach tracker.</p>", status_code=401)
     return OUTREACH_HTML
 
 
@@ -451,7 +468,9 @@ OUTREACH_HTML = """<!doctype html>
 </div>
 <script>
 async function load() {
-  const r = await fetch('/api/outreach');
+  const params = new URLSearchParams(window.location.search);
+  const key = params.get('key') || '';
+  const r = await fetch('/api/outreach?key=' + encodeURIComponent(key));
   const d = await r.json();
   const stats = document.getElementById('stats');
   stats.innerHTML = '<div class="stat"><div class="v">'+d.total+'</div><div class="l">Total Sent</div></div>';
