@@ -256,7 +256,8 @@ def api_finops(q: str = Query(..., min_length=3, max_length=400)):
     })
 
 
-OUTREACH_KEY = os.environ.get("OUTREACH_KEY", "keiracom2026")
+import secrets as _secrets
+OUTREACH_KEY = os.environ.get("OUTREACH_KEY") or _secrets.token_urlsafe(16)
 
 
 def _check_outreach_auth(key: str | None):
